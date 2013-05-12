@@ -1,3 +1,4 @@
+
 var EndPoint_Create = "/alm_create";
 var EndPoint_Join = "/alm_join";
 var EndPoint_Cand = "/alm_cand";
@@ -16,7 +17,7 @@ var WebRTC_ALM = function(host) {
     this.max_upstreams = 1;  // TODO
     this.max_downstreams = 1;
     this.handler = null;
-    this.chunk_size = window.webkitRTCPeerConnection ? 900 : 20000;
+    this.chunk_size = window.webkitRTCPeerConnection ? 500 : 20000;
     this.blob_table = null;
 };
 var WebRTC_ALM_DataChannelInfo = function(alm) {
@@ -30,6 +31,7 @@ var WebRTC_ALM_DataChannelInfo = function(alm) {
 
 WebRTC_ALM.prototype.multicast = function(data) {
     for(var i = 0; i < this.downstreams.length; ++i) {
+        //console.log("multicast", data);
         this.downstreams[i].ch.send(data);
     }
 };
@@ -37,9 +39,10 @@ WebRTC_ALM.prototype.multicast = function(data) {
 WebRTC_ALM.prototype.multicast_blob = function(blob, title) { // arrayBuffer
     var t = title || "untitled-" + (+new Date());
     var num = Math.ceil(blob.byteLength / this.chunk_size);
+    //console.log('doing multicast', num);
     for (var i = 0; i < num; i++){
         var start = i * this.chunk_size;
-        this.multicast(Rawdeflate.deflate(JSON.stringify({
+        var d = RawDeflate.deflate(JSON.stringify({
             m : "blob",
             i : i,
             d : Array.apply(null, new Uint8Array(
@@ -47,13 +50,19 @@ WebRTC_ALM.prototype.multicast_blob = function(blob, title) { // arrayBuffer
                 )),
             n : num,
             t : t
-        })));
+        }));
+        console.log("multicast_blob-size:", d.length);
+        this.multicast(d);
     }
 };
 
-WebRTC_ALM.prototype.create_group = function (group_id, ok_callback, err_callback) {
+WebRTC_ALM.prototype.create_group = function (group_id, ok_callback, err_callback, dc_callback) {
     var owner = this;
     if (this.join_) throw 'already created/joined group';
+    this.dc_callback = function(){
+        dc_callback.call(this);
+        delete this.dc_callback;
+    };
     this.ws_ = new WebSocket(this.server_ + EndPoint_Create);
     this.ws_.onopen = function(ev) {
         owner.ws_.send(JSON.stringify({'g': group_id}));
@@ -174,6 +183,7 @@ WebRTC_ALM_DataChannelInfo.prototype.start_candidate_process = function(offer_sd
         info.conn.ondatachannel = function(ev) {
             info.ch = ev.channel;
             info.ch.onopen = function() {
+                if(info.alm.dc_callback) info.alm.dc_callback();
                 console.log("DataChannel: onOpen (passive)");
             };
             console.log("onDataChannel Callback");
@@ -206,7 +216,9 @@ WebRTC_ALM.prototype.ReceiveMessageFromUpstream = function(ev) {
     var is_ctrl = false;
     try {
         //msg = JSON.parse(new Zlib.Inflate(ev.data).decompress());
-        msg = JSON.parse(RawDeflate.inflate(ev.data));
+        var str = RawDeflate.inflate(ev.data);
+        //console.log("str", str);
+        msg = JSON.parse(str);
         if (msg.m && (msg.m == 'new'))
             is_ctrl = true;
     } catch (ex) {}
@@ -243,6 +255,7 @@ WebRTC_ALM.prototype.BlobHandler = function(msg){
     this.blob_table[msg.t][msg.i] = msg.d;
     //this.blob_table[msg.t][msg.i] = new Uint8Array(msg.d).buffer;
     if(Object.keys(this.blob_table[msg.t]).length == msg.n){
+        console.log("Just completed one blob.");
         clearTimeout(this.blob_table[msg.t].expire);
         var array = new Uint8Array((msg.n-1)*this.chunk_size+
                                    this.blob_table[msg.t][msg.n-1].byteLength);
