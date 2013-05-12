@@ -16,6 +16,8 @@ var WebRTC_ALM = function(host) {
     this.max_upstreams = 1;  // TODO
     this.max_downstreams = 1;
     this.handler = null;
+    this.chunk_size = window.webkitRTCPeerConnection ? 900 : 20000;
+    this.blob_table = null;
 };
 var WebRTC_ALM_DataChannelInfo = function(alm) {
     this.alm = alm;
@@ -29,6 +31,23 @@ var WebRTC_ALM_DataChannelInfo = function(alm) {
 WebRTC_ALM.prototype.multicast = function(data) {
     for(var i = 0; i < this.downstreams.length; ++i) {
         this.downstreams[i].ch.send(data);
+    }
+};
+
+WebRTC_ALM.prototype.multicast_blob = function(blob, title) { // arrayBuffer
+    var t = title || "untitled-" + (+new Date());
+    var number = Math.ceil(blob.byteLength / this.chunk_size);
+    for (var i = 0; i < this.number; i++){
+        var start = i * this.chunk_size;
+        this.multicast(Rawdeflate.deflate(JSON.stringify({
+            m : "blob",
+            i : i,
+            d : Array.apply(null, new Uint8Array(
+                    blob.slice(start, Math.min((start + this.chunk_size), blob.byteLength))
+                )),
+            n : number,
+            t : t
+        })));
     }
 };
 
@@ -75,10 +94,12 @@ WebRTC_ALM.prototype.join_group = function (group_id, ok_callback, err_callback,
             console.log("DataChannel: onOpen");
             ok_callback();
         };
-        upstrm.ch.alm = owner;
-        upstrm.ch.onmessage = owner.ReceiveMessageFromUpstream;
+        upstrm.ch.alm = owner;// can be removed.
+        upstrm.ch.onmessage = function(ev){
+            owner.ReceiveMessageFromUpstream(ev);
+        }
         owner.upstreams.push(upstrm);
-
+        
         upstrm.conn.createOffer(function(offer) {
             console.log(offer);
             upstrm.conn.setLocalDescription(offer);
@@ -190,17 +211,29 @@ WebRTC_ALM.prototype.ReceiveMessageFromUpstream = function(ev) {
             is_ctrl = true;
     } catch (ex) {}
 
-    if (msg.m == 'new' && this.alm.downstreams.length < this.alm.max_downstreams) {
+    if (msg.m == 'new' && this.downstreams.length < this.max_downstreams) {
         console.log('[listener] recv new-member req from upstream');
-        var info = new WebRTC_ALM_DataChannelInfo(this.alm);
+        var info = new WebRTC_ALM_DataChannelInfo(this);
         info.ekey = msg.e;
         info.start_candidate_process(msg.s);
     } else {
         console.log('[listener] relay message-type=' + msg.m);
-        if (!is_ctrl)
-            this.alm.handler(ev.data);
-        for(var i = 0; i < this.alm.downstreams.length; ++i) {
-            this.alm.downstreams[i].ch.send(ev.data);
+        if (!is_ctrl){
+            if(msg.m == 'blob'){
+                this.BlobHandler(ev.data);
+            }else{
+                this.handler(ev.data);
+            }
+        }
+        for(var i = 0; i < this.downstreams.length; ++i) {
+            this.downstreams[i].ch.send(ev.data);
         }
     }
 };
+
+WebRTC_ALM.prototype.BlobHandler = function(msg){
+    if(!this.blob_table[msg.t]){
+        this.blob_table[msg.t] = {};
+    }
+    this.blob_table[msg.t][msg.i] = new Uint8Array(msg.d).buffer;
+}
