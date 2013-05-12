@@ -36,8 +36,8 @@ WebRTC_ALM.prototype.multicast = function(data) {
 
 WebRTC_ALM.prototype.multicast_blob = function(blob, title) { // arrayBuffer
     var t = title || "untitled-" + (+new Date());
-    var number = Math.ceil(blob.byteLength / this.chunk_size);
-    for (var i = 0; i < this.number; i++){
+    var num = Math.ceil(blob.byteLength / this.chunk_size);
+    for (var i = 0; i < num; i++){
         var start = i * this.chunk_size;
         this.multicast(Rawdeflate.deflate(JSON.stringify({
             m : "blob",
@@ -45,7 +45,7 @@ WebRTC_ALM.prototype.multicast_blob = function(blob, title) { // arrayBuffer
             d : Array.apply(null, new Uint8Array(
                     blob.slice(start, Math.min((start + this.chunk_size), blob.byteLength))
                 )),
-            n : number,
+            n : num,
             t : t
         })));
     }
@@ -211,7 +211,7 @@ WebRTC_ALM.prototype.ReceiveMessageFromUpstream = function(ev) {
             is_ctrl = true;
     } catch (ex) {}
 
-    if (msg.m == 'new' && this.downstreams.length < this.max_downstreams) {
+    if (msg.m == 'new' && this.downstreams.length < this.max_downstreams){
         console.log('[listener] recv new-member req from upstream');
         var info = new WebRTC_ALM_DataChannelInfo(this);
         info.ekey = msg.e;
@@ -219,9 +219,9 @@ WebRTC_ALM.prototype.ReceiveMessageFromUpstream = function(ev) {
     } else {
         console.log('[listener] relay message-type=' + msg.m);
         if (!is_ctrl){
-            if(msg.m == 'blob'){
-                this.BlobHandler(ev.data);
-            }else{
+            if (msg.m == 'blob'){
+                this.BlobHandler(msg);
+            } else {
                 this.handler(ev.data);
             }
         }
@@ -232,8 +232,24 @@ WebRTC_ALM.prototype.ReceiveMessageFromUpstream = function(ev) {
 };
 
 WebRTC_ALM.prototype.BlobHandler = function(msg){
+    var owner = this;
+    if(!this.blob_table) this.blob_table = {};
     if(!this.blob_table[msg.t]){
         this.blob_table[msg.t] = {};
+        this.blob_table[msg.t].expire = setTimeout(function(){
+            delete owner.blob_table[msg.t];
+        }, 10000); // todo
     }
-    this.blob_table[msg.t][msg.i] = new Uint8Array(msg.d).buffer;
+    this.blob_table[msg.t][msg.i] = msg.d;
+    //this.blob_table[msg.t][msg.i] = new Uint8Array(msg.d).buffer;
+    if(Object.keys(this.blob_table[msg.t]).length == msg.n){
+        clearTimeout(this.blob_table[msg.t].expire);
+        var array = new Uint8Array((msg.n-1)*this.chunk_size+
+                                   this.blob_table[msg.t][msg.n-1].byteLength);
+        for (var i = 0; i < msg.n; ++i) {
+            array.set(this.blob_table[msg.t][i], i*this.chunk_size);
+        }
+        this.handler(new Blob([array]));
+        delete this.blob_table[msg.t];
+    }
 }
